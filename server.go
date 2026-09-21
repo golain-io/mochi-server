@@ -1237,11 +1237,34 @@ func (s *Server) processPubcomp(cl *Client, pk packets.Packet) error {
 	return nil
 }
 
+// clientPacketIDInUse reports whether the client's own packet identifier space
+// still has an unfinished exchange under id. Inflight holds both directions:
+// outbound Publish/Pubrel entries carry server-assigned ids, while an inbound
+// QoS 2 flow is stored as the Pubrec/Pubcomp we answered with under the
+// client-assigned id. Only the latter can collide with a Subscribe/Unsubscribe id
+// — identifiers are assigned independently per direction [MQTT-2.2.1-3], so an
+// unacked server→client publish numbered N must not reject the client's
+// SUBSCRIBE N with 0x91. Doing so wedged clients that reconnect with a
+// persistent session: the resent inflight publish keeps id N, the client's
+// fresh SUBSCRIBE reuses N, every SUBACK comes back 0x91, MQTT 3.1.1 libraries
+// treat that as a protocol error and drop the connection before ever acking N.
+func clientPacketIDInUse(cl *Client, id uint16) bool {
+	inf, ok := cl.State.Inflight.Get(id)
+	if !ok {
+		return false
+	}
+	switch inf.FixedHeader.Type {
+	case packets.Pubrec, packets.Pubcomp:
+		return true
+	}
+	return false
+}
+
 // processSubscribe processes a Subscribe packet.
 func (s *Server) processSubscribe(cl *Client, pk packets.Packet) error {
 	pk = s.hooks.OnSubscribe(cl, pk)
 	code := packets.CodeSuccess
-	if _, ok := cl.State.Inflight.Get(pk.PacketID); ok {
+	if clientPacketIDInUse(cl, pk.PacketID) {
 		code = packets.ErrPacketIdentifierInUse
 	}
 
@@ -1315,7 +1338,7 @@ func (s *Server) processSubscribe(cl *Client, pk packets.Packet) error {
 // processUnsubscribe processes an unsubscribe packet.
 func (s *Server) processUnsubscribe(cl *Client, pk packets.Packet) error {
 	code := packets.CodeSuccess
-	if _, ok := cl.State.Inflight.Get(pk.PacketID); ok {
+	if clientPacketIDInUse(cl, pk.PacketID) {
 		code = packets.ErrPacketIdentifierInUse
 	}
 
