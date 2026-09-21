@@ -2801,7 +2801,8 @@ func TestServerProcessPacketSubscribePacketIDInUse(t *testing.T) {
 	s := newServer()
 	cl, r, w := newTestClient()
 	cl.Properties.ProtocolVersion = 5
-	cl.State.Inflight.Set(packets.Packet{PacketID: 15, FixedHeader: packets.FixedHeader{Type: packets.Publish}})
+	// an inbound QoS 2 publish from this client, still awaiting its PUBREL
+	cl.State.Inflight.Set(packets.Packet{PacketID: 15, FixedHeader: packets.FixedHeader{Type: packets.Pubrec}})
 
 	pkx := *packets.TPacketData[packets.Subscribe].Get(packets.TSubscribeMqtt5).Packet
 	pkx.PacketID = 15
@@ -2814,6 +2815,31 @@ func TestServerProcessPacketSubscribePacketIDInUse(t *testing.T) {
 	buf, err := io.ReadAll(r)
 	require.NoError(t, err)
 	require.Equal(t, packets.TPacketData[packets.Suback].Get(packets.TSubackPacketIDInUse).RawBytes, buf)
+}
+
+// An unacked server→client publish occupies the SERVER's identifier space; the
+// client's SUBSCRIBE with the same number is a different exchange and must succeed.
+func TestServerProcessPacketSubscribePacketIDOutboundInflightNotInUse(t *testing.T) {
+	s := newServer()
+	cl, r, w := newTestClient()
+	cl.Properties.ProtocolVersion = 5
+	cl.State.Inflight.Set(packets.Packet{PacketID: 15, FixedHeader: packets.FixedHeader{Type: packets.Publish}})
+
+	pkx := *packets.TPacketData[packets.Subscribe].Get(packets.TSubscribeMqtt5).Packet
+	pkx.PacketID = 15
+	go func() {
+		err := s.processPacket(cl, pkx)
+		require.NoError(t, err)
+		_ = w.Close()
+	}()
+
+	buf, err := io.ReadAll(r)
+	require.NoError(t, err)
+	expected := *packets.TPacketData[packets.Suback].Get(packets.TSubackMqtt5).Packet
+	expected.PacketID = 15
+	expectedBuf := new(bytes.Buffer)
+	require.NoError(t, expected.SubackEncode(expectedBuf))
+	require.Equal(t, expectedBuf.Bytes(), buf)
 }
 
 func TestServerProcessPacketSubscribeInvalid(t *testing.T) {
@@ -3052,7 +3078,7 @@ func TestServerProcessPacketUnsubscribePackedIDInUse(t *testing.T) {
 	s := newServer()
 	cl, r, w := newTestClient()
 	cl.Properties.ProtocolVersion = 5
-	cl.State.Inflight.Set(packets.Packet{PacketID: 15, FixedHeader: packets.FixedHeader{Type: packets.Publish}})
+	cl.State.Inflight.Set(packets.Packet{PacketID: 15, FixedHeader: packets.FixedHeader{Type: packets.Pubrec}})
 	go func() {
 		err := s.processPacket(cl, *packets.TPacketData[packets.Unsubscribe].Get(packets.TUnsubscribeMqtt5).Packet)
 		require.NoError(t, err)
